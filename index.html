@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Amendoeira Cup 2026</title>
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0b3d2e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Amendoeira Cup">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="header-inner">
+    <span class="header-crest">⛳</span>
+    <div class="header-text">
+      <h1>Amendoeira Cup</h1>
+      <p>O'Connor Jnr &amp; Faldo · 8 Players · 5 Days</p>
+    </div>
+  </div>
+</header>
+
+<nav class="tabbar" id="tabbar">
+  <button class="tab-btn active" data-tab="setup">Setup</button>
+  <button class="tab-btn" data-tab="schedule">Schedule</button>
+  <button class="tab-btn" data-tab="enter">Enter Scores</button>
+  <button class="tab-btn" data-tab="indiv">Individual</button>
+  <button class="tab-btn" data-tab="team">Team</button>
+  <button class="tab-btn" data-tab="rules">Rules</button>
+</nav>
+
+<main id="app">
+
+  <!-- SETUP TAB -->
+  <section class="tab-panel active" id="tab-setup">
+    <h2>Players</h2>
+    <p class="hint">Enter all 8 players, their Handicap Index, and their team. Tap <strong>Save Players</strong> when done — you can edit and re-save any time.</p>
+    <div id="player-form-rows"></div>
+    <div class="row-actions">
+      <button class="btn btn-primary" id="btn-save-players">Save Players</button>
+      <span id="player-save-status" class="save-status"></span>
+    </div>
+
+    <h2>Course Handicap Reference</h2>
+    <p class="hint">Calculated automatically from each player's Handicap Index for both courses.</p>
+    <div class="table-wrap">
+      <table id="ch-table">
+        <thead>
+          <tr><th>Player</th><th>Team</th><th>HI</th><th>CH O'Connor</th><th>CH Faldo</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <h2>Data</h2>
+    <div class="row-actions wrap">
+      <button class="btn" id="btn-export">Export JSON</button>
+      <button class="btn" id="btn-import-trigger">Import JSON</button>
+      <input type="file" id="btn-import-file" accept="application/json" style="display:none">
+    </div>
+    <div class="row-actions wrap">
+      <button class="btn btn-warn" id="btn-reset-scores">Reset Scores</button>
+      <button class="btn btn-danger" id="btn-reset-all">Reset Everything</button>
+    </div>
+  </section>
+
+  <!-- SCHEDULE TAB -->
+  <section class="tab-panel" id="tab-schedule">
+    <h2>Tournament Schedule</h2>
+    <div id="schedule-list" class="schedule-list"></div>
+  </section>
+
+  <!-- ENTER SCORES TAB -->
+  <section class="tab-panel" id="tab-enter">
+    <h2>Enter Scores</h2>
+    <label class="field-label" for="round-select">Round</label>
+    <select id="round-select"></select>
+    <div id="round-entry"></div>
+  </section>
+
+  <!-- INDIVIDUAL LEADERBOARD TAB -->
+  <section class="tab-panel" id="tab-indiv">
+    <h2>Individual Leaderboard</h2>
+    <p class="hint">Points from the 4 individual stroke play rounds. Ties split points equally.</p>
+    <div class="table-wrap">
+      <table id="indiv-table">
+        <thead>
+          <tr><th>#</th><th>Player</th><th>Team</th><th>Pts</th><th>Rds</th><th>Best Net</th><th>Avg Net</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- TEAM LEADERBOARD TAB -->
+  <section class="tab-panel" id="tab-team">
+    <h2>Team Leaderboard</h2>
+    <div id="team-cards" class="team-cards"></div>
+    <div class="table-wrap">
+      <table id="team-table">
+        <thead>
+          <tr><th>Team</th><th>Total</th><th>From Individual Rds</th><th>From Team Rds</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <h3>Round-by-Round Breakdown</h3>
+    <div id="team-breakdown"></div>
+  </section>
+
+  <!-- RULES TAB -->
+  <section class="tab-panel" id="tab-rules">
+    <h2>Rules &amp; Scoring</h2>
+    <div id="rules-content"></div>
+  </section>
+
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script src="logic.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
