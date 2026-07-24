@@ -2,7 +2,7 @@
 // Settings > General > Your apps > SDK setup and configuration).
 // Until this has real values, the app runs in local-only mode - fully
 // functional on one device, just not synced across phones.
-const firebaseConfig = {
+window.FIREBASE_CONFIG = {
   apiKey: "AIzaSyDEda6wGqTi_u0IAnLCvqm_4Qdr-d2rroo",
   authDomain: "amendoeira-cup.firebaseapp.com",
   databaseURL: "https://amendoeira-cup-default-rtdb.europe-west1.firebasedatabase.app",
