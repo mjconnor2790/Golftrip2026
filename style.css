@@ -92,6 +92,29 @@ p.hint {
   opacity: 0.9;
 }
 
+.sync-badge {
+  flex: 0 0 auto;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 4px 9px;
+  border-radius: 20px;
+  background: rgba(255,255,255,0.12);
+  color: var(--cream);
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+}
+.sync-badge.live {
+  background: #1f7a4d;
+  color: #fff;
+}
+.sync-badge.offline {
+  background: #8a4a1c;
+  color: #fff;
+}
+.sync-badge.local {
+  background: rgba(255,255,255,0.12);
+}
+
 /* Tab bar */
 .tabbar {
   display: flex;
