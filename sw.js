@@ -1,6 +1,6 @@
 // Bump this version string on every deploy that changes app files - it
 // forces old caches (and any stale copy stuck on a phone) to be dropped.
-const CACHE_NAME = 'amendoeira-cup-v2';
+const CACHE_NAME = 'amendoeira-cup-v3';
 
 const APP_SHELL = [
   './',
@@ -43,6 +43,13 @@ function isAppShellRequest(url) {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
+  // Never intercept cross-origin requests (e.g. the Firebase SDK loaded
+  // from gstatic.com). Let the browser fetch those natively - proxying
+  // cross-origin script requests through a service worker is a common
+  // source of silent script-load failures, and there's nothing useful for
+  // us to cache there anyway.
+  if (new URL(event.request.url).origin !== self.location.origin) return;
+
   const url = event.request.url;
   const isNavigation = event.request.mode === 'navigate';
 
@@ -69,13 +76,15 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;
-      return fetch(event.request).then((networkResponse) => {
-        if (networkResponse && networkResponse.status === 200) {
-          const clone = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        }
-        return networkResponse;
-      });
+      return fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const clone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return networkResponse;
+        })
+        .catch(() => cached);
     })
   );
 });
