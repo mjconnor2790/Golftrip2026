@@ -276,20 +276,7 @@
   // Schedule tab
   // ---------------------------------------------------------------------
   function roundIsComplete(round) {
-    const rs = state.scores[round.id];
-    if (!rs) return false;
-    if (round.format === 'individual') {
-      return state.players.every(p => rs[p.id] !== undefined && rs[p.id] !== null && rs[p.id] !== '');
-    }
-    if (round.format === 'scramble2v2' || round.format === 'altshot2v2') {
-      return Array.isArray(rs.pairings) && rs.pairings.length === 4 &&
-        rs.pairings.every(pr => pr.gross !== undefined && pr.gross !== null && pr.gross !== '');
-    }
-    if (round.format === 'team4') {
-      return rs.teamA !== undefined && rs.teamA !== null && rs.teamA !== '' &&
-        rs.teamB !== undefined && rs.teamB !== null && rs.teamB !== '';
-    }
-    return false;
+    return G.isRoundComplete(round, state.scores[round.id], state.players);
   }
 
   function renderSchedule() {
@@ -348,184 +335,301 @@
     }
   }
 
-  function renderIndividualEntry(round, container) {
-    const existing = state.scores[round.id] || {};
-    const card = el('div', { class: 'entry-card' });
+  // ---------------------------------------------------------------------
+  // Shared hole-by-hole / quick-total entry component, used by all three
+  // round formats. `entities` is [{ id, makeLabel(), holes: <array, mutated
+  // in place>, getManualTotal, setManualTotal }]. Every change autosaves
+  // immediately (localStorage + cloud) - there's no separate "unsaved
+  // draft" state, since a round can take hours to play and the app must
+  // never lose progress if it's closed mid-round.
+  // ---------------------------------------------------------------------
+  let currentHoleByRound = {};
+  let entryModeByRound = {};
 
-    const header = el('div', { class: 'entry-player-row' }, [
-      el('div', { class: 'entry-player-name' }, ['Player']),
-      el('div', { class: 'entry-readonly' }, ['CH']),
-      el('div', { class: 'entry-readonly' }, ['Net']),
-      el('div', { class: 'entry-readonly' }, ['Gross'])
+  function getCurrentHole(roundId) { return currentHoleByRound[roundId] || 1; }
+  function setCurrentHole(roundId, h) { currentHoleByRound[roundId] = Math.max(1, Math.min(18, h)); }
+  function getEntryMode(roundId) { return entryModeByRound[roundId] || 'holes'; }
+  function setEntryMode(roundId, mode) { entryModeByRound[roundId] = mode; }
+
+  function scoreVsParClass(strokes, par) {
+    if (strokes === null || strokes === undefined || strokes === '' || Number.isNaN(Number(strokes))) return '';
+    const diff = Number(strokes) - par;
+    if (diff <= -1) return 'score-under';
+    if (diff === 0) return 'score-par';
+    return 'score-over';
+  }
+
+  function renderScoreEntryUI(round, entities, container, onPersist) {
+    const mode = getEntryMode(round.id);
+    const course = G.COURSES[round.course];
+
+    const modeBar = el('div', { class: 'row-actions' }, [
+      el('button', {
+        class: 'btn btn-small' + (mode === 'holes' ? ' btn-primary' : ''),
+        onclick: () => { setEntryMode(round.id, 'holes'); renderRoundEntry(round.id); }
+      }, ['Hole by Hole']),
+      el('button', {
+        class: 'btn btn-small' + (mode === 'total' ? ' btn-primary' : ''),
+        onclick: () => { setEntryMode(round.id, 'total'); renderRoundEntry(round.id); }
+      }, ['Quick Total'])
     ]);
-    card.appendChild(header);
+    container.appendChild(modeBar);
 
-    state.players.forEach(p => {
-      const ch = G.courseHandicap(p.handicapIndex, round.course);
-      const grossInput = el('input', {
+    if (mode === 'total') {
+      entities.forEach(ent => {
+        const input = el('input', {
+          type: 'number', inputmode: 'numeric', placeholder: 'Gross total',
+          value: ent.getManualTotal() !== undefined ? ent.getManualTotal() : ''
+        });
+        input.addEventListener('input', () => {
+          ent.setManualTotal(input.value === '' ? '' : input.value);
+          saveState();
+          onPersist();
+        });
+        container.appendChild(el('div', { class: 'entry-card' }, [
+          el('div', { class: 'field-label' }, [ent.makeLabel()]),
+          input
+        ]));
+      });
+      const saveBtn = el('button', { class: 'btn btn-primary', onclick: () => { toast('Scores saved for ' + round.session); renderSchedule(); renderIndividualLeaderboard(); renderTeamLeaderboard(); } }, ['Save Round']);
+      const clearBtn = el('button', { class: 'btn btn-warn', onclick: () => clearRound(round) }, ['Clear Round']);
+      container.appendChild(el('div', { class: 'row-actions' }, [saveBtn, clearBtn]));
+      return;
+    }
+
+    // Hole-by-hole stepper
+    const holeNum = getCurrentHole(round.id);
+    const holeIdx = holeNum - 1;
+    const holeInfo = course.holes[holeIdx];
+
+    const header = el('div', { class: 'hole-stepper-header' }, [
+      el('button', { class: 'btn btn-small', onclick: () => { setCurrentHole(round.id, holeNum - 1); renderRoundEntry(round.id); } }, ['‹']),
+      el('div', { class: 'hole-stepper-title' }, [
+        el('div', { class: 'hs-hole' }, ['Hole ' + holeNum]),
+        el('div', { class: 'hs-meta' }, ['Par ' + holeInfo.par + ' · Stroke Index ' + holeInfo.index])
+      ]),
+      el('button', { class: 'btn btn-small', onclick: () => { setCurrentHole(round.id, holeNum + 1); renderRoundEntry(round.id); } }, ['›'])
+    ]);
+    container.appendChild(header);
+
+    entities.forEach(ent => {
+      const val = ent.holes[holeIdx];
+      const input = el('input', {
         type: 'number', inputmode: 'numeric', placeholder: '—',
-        id: 'gross-' + round.id + '-' + p.id,
-        value: existing[p.id] !== undefined ? existing[p.id] : ''
+        value: (val === null || val === undefined) ? '' : val
       });
-      const netDisplay = el('div', { class: 'entry-readonly', id: 'net-' + round.id + '-' + p.id }, [
-        existing[p.id] !== undefined && existing[p.id] !== '' ? String(Number(existing[p.id]) - ch) : '—'
+      const totalDisplay = el('div', { class: 'entry-readonly' }, [String(G.sumHoles(ent.holes))]);
+      const badgeDisplay = el('div', { class: 'score-badge' }, []);
+      const row = el('div', { class: 'entry-hole-row' }, [
+        el('div', { class: 'entry-player-name' }, [ent.makeLabel()]),
+        totalDisplay,
+        badgeDisplay,
+        input
       ]);
-      grossInput.addEventListener('input', () => {
-        const v = grossInput.value;
-        netDisplay.textContent = (v === '' || Number.isNaN(Number(v))) ? '—' : String(Number(v) - ch);
+      function applyClass() {
+        row.classList.remove('score-under', 'score-par', 'score-over');
+        const cls = scoreVsParClass(input.value, holeInfo.par);
+        if (cls) row.classList.add(cls);
+      }
+      function applyBadge() {
+        const badge = G.getScoreBadge(input.value, holeInfo.par);
+        badgeDisplay.textContent = badge ? badge.emoji : '';
+        badgeDisplay.title = badge ? badge.label : '';
+        return badge;
+      }
+      applyClass();
+      applyBadge();
+      input.addEventListener('input', () => {
+        const v = input.value;
+        ent.holes[holeIdx] = (v === '' || Number.isNaN(Number(v))) ? null : Number(v);
+        saveState();
+        totalDisplay.textContent = String(G.sumHoles(ent.holes));
+        applyClass();
+        applyBadge();
+        onPersist();
       });
-      const row = el('div', { class: 'entry-player-row' }, [
-        el('div', { class: 'entry-player-name' }, [
-          p.name, ' ',
-          el('span', { class: 'team-chip ' + p.team }, [p.team])
-        ]),
-        el('div', { class: 'entry-readonly' }, [String(ch)]),
-        netDisplay,
-        grossInput
-      ]);
-      card.appendChild(row);
+      input.addEventListener('change', () => {
+        // Fires once the value is committed (blur/enter), not on every
+        // keystroke while typing - avoids spamming a toast mid-typing.
+        const badge = G.getScoreBadge(input.value, holeInfo.par);
+        if (badge) {
+          const nameText = ent.makeLabel().textContent;
+          toast(badge.emoji + ' ' + badge.label + ' — ' + nameText);
+        }
+      });
+      container.appendChild(row);
     });
-    container.appendChild(card);
 
-    const saveBtn = el('button', { class: 'btn btn-primary', onclick: () => saveIndividualRound(round) }, ['Save Round']);
+    const jump = el('select', {});
+    for (let h = 1; h <= 18; h++) {
+      const opt = el('option', { value: h }, ['Hole ' + h]);
+      if (h === holeNum) opt.selected = true;
+      jump.appendChild(opt);
+    }
+    jump.addEventListener('change', () => { setCurrentHole(round.id, Number(jump.value)); renderRoundEntry(round.id); });
+    container.appendChild(el('div', { class: 'field-grid' }, [el('label', { class: 'field-label' }, ['Jump to hole']), jump]));
+
+    // Compact "thru / total so far" summary for every entity
+    const summary = el('div', { class: 'scorecard-summary' });
+    entities.forEach(ent => {
+      const thru = ent.holes.filter(v => v !== null && v !== undefined && v !== '').length;
+      const total = G.sumHoles(ent.holes);
+      summary.appendChild(el('div', { class: 'breakdown-row' }, [
+        el('div', { class: 'br-label' }, [ent.makeLabel()]),
+        el('div', { class: 'br-scores' }, [thru === 0 ? 'Not started' : ('Thru ' + thru + ' · ' + total + (thru === 18 ? ' (' + (total - course.par >= 0 ? '+' : '') + (total - course.par) + ')' : ''))])
+      ]));
+    });
+    container.appendChild(summary);
+
+    const saveBtn = el('button', { class: 'btn btn-primary', onclick: () => { toast('Scores saved for ' + round.session); renderSchedule(); renderIndividualLeaderboard(); renderTeamLeaderboard(); } }, ['Save Round']);
     const clearBtn = el('button', { class: 'btn btn-warn', onclick: () => clearRound(round) }, ['Clear Round']);
     container.appendChild(el('div', { class: 'row-actions' }, [saveBtn, clearBtn]));
   }
 
-  function saveIndividualRound(round) {
-    const scores = {};
+  function ensureIndividualShape(roundId) {
+    if (!state.scores[roundId] || typeof state.scores[roundId] !== 'object') state.scores[roundId] = {};
+    const rs = state.scores[roundId];
+    if (!rs.holes) rs.holes = {};
+    if (!rs.manualTotal) rs.manualTotal = {};
     state.players.forEach(p => {
-      const input = $('#gross-' + round.id + '-' + p.id);
-      const v = input.value;
-      if (v !== '' && !Number.isNaN(Number(v))) scores[p.id] = Number(v);
+      if (!Array.isArray(rs.holes[p.id]) || rs.holes[p.id].length !== 18) rs.holes[p.id] = new Array(18).fill(null);
+      if (rs.manualTotal[p.id] === undefined) {
+        // back-compat: a round saved before hole-by-hole entry existed
+        // stored a flat { playerId: number } total directly.
+        rs.manualTotal[p.id] = (typeof rs[p.id] === 'number') ? rs[p.id] : '';
+      }
+      if (typeof rs[p.id] === 'number') delete rs[p.id];
     });
-    state.scores[round.id] = scores;
-    saveState();
-    if (window.CloudSync) window.CloudSync.saveRoundScore(round.id, scores);
-    toast('Scores saved for ' + round.session);
-    renderSchedule();
-    renderIndividualLeaderboard();
-    renderTeamLeaderboard();
+    return rs;
+  }
+
+  function renderIndividualEntry(round, container) {
+    const rs = ensureIndividualShape(round.id);
+    const entities = state.players.map(p => ({
+      id: p.id,
+      makeLabel: () => el('span', {}, [p.name, ' ', el('span', { class: 'team-chip ' + p.team }, [p.team])]),
+      holes: rs.holes[p.id],
+      getManualTotal: () => rs.manualTotal[p.id],
+      setManualTotal: (v) => { rs.manualTotal[p.id] = v; }
+    }));
+    renderScoreEntryUI(round, entities, container, () => {
+      if (window.CloudSync) window.CloudSync.saveRoundScore(round.id, state.scores[round.id]);
+    });
+  }
+
+  function ensureScrambleShape(roundId) {
+    if (!state.scores[roundId] || typeof state.scores[roundId] !== 'object' || !Array.isArray(state.scores[roundId].pairings)) {
+      state.scores[roundId] = { pairings: [] };
+    }
+    const rs = state.scores[roundId];
+    ['A', 'B'].forEach(team => {
+      const tp = teamPlayers(team);
+      [['1', 0], ['2', 1]].forEach(([slot, pos]) => {
+        const id = team + slot;
+        let pr = rs.pairings.find(x => x.id === id);
+        if (!pr) {
+          const defaultIds = pos === 0 ? [tp[0].id, tp[1].id] : [tp[2].id, tp[3].id];
+          pr = { id: id, team: team, playerIds: defaultIds, holes: new Array(18).fill(null), manualTotal: '' };
+          rs.pairings.push(pr);
+        }
+        if (!Array.isArray(pr.holes) || pr.holes.length !== 18) pr.holes = new Array(18).fill(null);
+        if (pr.manualTotal === undefined) pr.manualTotal = (typeof pr.gross === 'number') ? pr.gross : '';
+        if (typeof pr.gross === 'number') delete pr.gross;
+        if (!Array.isArray(pr.playerIds) || pr.playerIds.length !== 2) {
+          pr.playerIds = pos === 0 ? [tp[0].id, tp[1].id] : [tp[2].id, tp[3].id];
+        }
+      });
+    });
+    return rs;
   }
 
   function renderScrambleEntry(round, container) {
-    const existing = state.scores[round.id] || { pairings: [] };
-    const savedPairings = existing.pairings || [];
+    const rs = ensureScrambleShape(round.id);
+
+    function pushRoundToCloud() {
+      if (window.CloudSync) window.CloudSync.saveRoundScore(round.id, state.scores[round.id]);
+    }
 
     ['A', 'B'].forEach(team => {
       const tp = teamPlayers(team);
-      const saved1 = savedPairings.find(pr => pr.team === team && pr.id === team + '1');
-      const saved2 = savedPairings.find(pr => pr.team === team && pr.id === team + '2');
-
-      let p1Ids = saved1 && saved1.playerIds ? saved1.playerIds.slice() : [tp[0].id, tp[1].id];
+      const pr1 = rs.pairings.find(p => p.id === team + '1');
+      const pr2 = rs.pairings.find(p => p.id === team + '2');
 
       const block = el('div', { class: 'pairing-block' });
-      block.appendChild(el('div', { class: 'pairing-title' }, [
-        el('span', { class: 'team-chip ' + team }, ['TEAM ' + team])
-      ]));
+      block.appendChild(el('div', { class: 'pairing-title' }, [el('span', { class: 'team-chip ' + team }, ['TEAM ' + team])]));
 
-      // Pairing 1 selects
       const sel1 = el('select', {});
       const sel2 = el('select', {});
       tp.forEach(pl => {
         sel1.appendChild(el('option', { value: pl.id }, [pl.name || pl.id]));
         sel2.appendChild(el('option', { value: pl.id }, [pl.name || pl.id]));
       });
-      sel1.value = p1Ids[0];
-      sel2.value = p1Ids[1];
+      sel1.value = pr1.playerIds[0];
+      sel2.value = pr1.playerIds[1];
 
       const pairing2Label = el('div', { class: 'entry-readonly', style: 'text-align:left;' });
       function updatePairing2Label() {
         const remaining = tp.filter(pl => pl.id !== sel1.value && pl.id !== sel2.value);
         pairing2Label.textContent = remaining.map(pl => pl.name || pl.id).join(' & ') || '(select two different players above)';
+        return remaining;
       }
       updatePairing2Label();
 
-      const gross1 = el('input', { type: 'number', inputmode: 'numeric', placeholder: 'Gross score', value: saved1 && saved1.gross !== undefined ? saved1.gross : '' });
-      const gross2 = el('input', { type: 'number', inputmode: 'numeric', placeholder: 'Gross score', value: saved2 && saved2.gross !== undefined ? saved2.gross : '' });
+      function persistComposition() {
+        const remaining = updatePairing2Label();
+        pr1.playerIds = [sel1.value, sel2.value];
+        pr2.playerIds = remaining.map(pl => pl.id);
+        saveState();
+        pushRoundToCloud();
+      }
 
       function enforceDistinct() {
         if (sel1.value === sel2.value) {
-          // bump sel2 to the next player
           const other = tp.find(pl => pl.id !== sel1.value);
           if (other) sel2.value = other.id;
         }
-        updatePairing2Label();
+        persistComposition();
       }
       sel1.addEventListener('change', enforceDistinct);
       sel2.addEventListener('change', enforceDistinct);
 
       block.appendChild(el('div', { class: 'field-label' }, ['Pairing 1']));
-      block.appendChild(el('div', { class: 'field-grid' }, [sel1, sel2, gross1]));
+      block.appendChild(el('div', { class: 'field-grid' }, [sel1, sel2]));
       block.appendChild(el('div', { class: 'field-label' }, ['Pairing 2 (remaining players)']));
-      block.appendChild(el('div', { class: 'field-grid' }, [pairing2Label, gross2]));
-
-      block.dataset.team = team;
-      block._sel1 = sel1; block._sel2 = sel2; block._gross1 = gross1; block._gross2 = gross2; block._tp = tp;
+      block.appendChild(el('div', { class: 'field-grid' }, [pairing2Label]));
       container.appendChild(block);
-      container['_block_' + team] = block;
     });
 
-    const saveBtn = el('button', { class: 'btn btn-primary', onclick: () => saveScrambleRound(round, container) }, ['Save Round']);
-    const clearBtn = el('button', { class: 'btn btn-warn', onclick: () => clearRound(round) }, ['Clear Round']);
-    container.appendChild(el('div', { class: 'row-actions' }, [saveBtn, clearBtn]));
+    const entities = [
+      { id: 'A1', makeLabel: () => document.createTextNode('Team A · Pairing 1'), holes: rs.pairings.find(p => p.id === 'A1').holes, getManualTotal: () => rs.pairings.find(p => p.id === 'A1').manualTotal, setManualTotal: (v) => { rs.pairings.find(p => p.id === 'A1').manualTotal = v; } },
+      { id: 'A2', makeLabel: () => document.createTextNode('Team A · Pairing 2'), holes: rs.pairings.find(p => p.id === 'A2').holes, getManualTotal: () => rs.pairings.find(p => p.id === 'A2').manualTotal, setManualTotal: (v) => { rs.pairings.find(p => p.id === 'A2').manualTotal = v; } },
+      { id: 'B1', makeLabel: () => document.createTextNode('Team B · Pairing 1'), holes: rs.pairings.find(p => p.id === 'B1').holes, getManualTotal: () => rs.pairings.find(p => p.id === 'B1').manualTotal, setManualTotal: (v) => { rs.pairings.find(p => p.id === 'B1').manualTotal = v; } },
+      { id: 'B2', makeLabel: () => document.createTextNode('Team B · Pairing 2'), holes: rs.pairings.find(p => p.id === 'B2').holes, getManualTotal: () => rs.pairings.find(p => p.id === 'B2').manualTotal, setManualTotal: (v) => { rs.pairings.find(p => p.id === 'B2').manualTotal = v; } }
+    ];
+    renderScoreEntryUI(round, entities, container, pushRoundToCloud);
   }
 
-  function saveScrambleRound(round, container) {
-    const pairings = [];
-    ['A', 'B'].forEach(team => {
-      const block = container['_block_' + team];
-      const tp = block._tp;
-      const id1 = block._sel1.value;
-      const id2 = block._sel2.value;
-      const remaining = tp.filter(pl => pl.id !== id1 && pl.id !== id2).map(pl => pl.id);
-      const g1 = block._gross1.value;
-      const g2 = block._gross2.value;
-      pairings.push({
-        id: team + '1', team: team, playerIds: [id1, id2],
-        gross: (g1 !== '' && !Number.isNaN(Number(g1))) ? Number(g1) : ''
-      });
-      pairings.push({
-        id: team + '2', team: team, playerIds: remaining,
-        gross: (g2 !== '' && !Number.isNaN(Number(g2))) ? Number(g2) : ''
-      });
+  function ensureTeam4Shape(roundId) {
+    if (!state.scores[roundId] || typeof state.scores[roundId] !== 'object') state.scores[roundId] = {};
+    const rs = state.scores[roundId];
+    ['teamA', 'teamB'].forEach(key => {
+      const legacy = (typeof rs[key] === 'number') ? rs[key] : '';
+      if (!rs[key] || typeof rs[key] !== 'object') rs[key] = { holes: new Array(18).fill(null), manualTotal: legacy };
+      if (!Array.isArray(rs[key].holes) || rs[key].holes.length !== 18) rs[key].holes = new Array(18).fill(null);
+      if (rs[key].manualTotal === undefined) rs[key].manualTotal = legacy;
     });
-    state.scores[round.id] = { pairings: pairings };
-    saveState();
-    if (window.CloudSync) window.CloudSync.saveRoundScore(round.id, { pairings: pairings });
-    toast('Scores saved for ' + round.session);
-    renderSchedule();
-    renderTeamLeaderboard();
+    return rs;
   }
 
   function renderTeam4Entry(round, container) {
-    const existing = state.scores[round.id] || {};
-    const aInput = el('input', { type: 'number', inputmode: 'numeric', placeholder: 'Team A gross', value: existing.teamA !== undefined ? existing.teamA : '' });
-    const bInput = el('input', { type: 'number', inputmode: 'numeric', placeholder: 'Team B gross', value: existing.teamB !== undefined ? existing.teamB : '' });
-
-    const card = el('div', { class: 'entry-card' }, [
-      el('div', { class: 'field-label' }, [el('span', { class: 'team-chip A' }, ['TEAM A']), ' gross score']),
-      aInput,
-      el('div', { class: 'field-label' }, [el('span', { class: 'team-chip B' }, ['TEAM B']), ' gross score']),
-      bInput
-    ]);
-    container.appendChild(card);
-
-    const saveBtn = el('button', {
-      class: 'btn btn-primary', onclick: () => {
-        state.scores[round.id] = {
-          teamA: (aInput.value !== '' && !Number.isNaN(Number(aInput.value))) ? Number(aInput.value) : '',
-          teamB: (bInput.value !== '' && !Number.isNaN(Number(bInput.value))) ? Number(bInput.value) : ''
-        };
-        saveState();
-        if (window.CloudSync) window.CloudSync.saveRoundScore(round.id, state.scores[round.id]);
-        toast('Scores saved for ' + round.session);
-        renderSchedule();
-        renderTeamLeaderboard();
-      }
-    }, ['Save Round']);
-    const clearBtn = el('button', { class: 'btn btn-warn', onclick: () => clearRound(round) }, ['Clear Round']);
-    container.appendChild(el('div', { class: 'row-actions' }, [saveBtn, clearBtn]));
+    const rs = ensureTeam4Shape(round.id);
+    const entities = [
+      { id: 'teamA', makeLabel: () => el('span', { class: 'team-chip A' }, ['TEAM A']), holes: rs.teamA.holes, getManualTotal: () => rs.teamA.manualTotal, setManualTotal: (v) => { rs.teamA.manualTotal = v; } },
+      { id: 'teamB', makeLabel: () => el('span', { class: 'team-chip B' }, ['TEAM B']), holes: rs.teamB.holes, getManualTotal: () => rs.teamB.manualTotal, setManualTotal: (v) => { rs.teamB.manualTotal = v; } }
+    ];
+    renderScoreEntryUI(round, entities, container, () => {
+      if (window.CloudSync) window.CloudSync.saveRoundScore(round.id, state.scores[round.id]);
+    });
   }
 
   function clearRound(round) {
@@ -625,6 +729,11 @@
         <p>Course Handicap = Handicap Index × (Slope ÷ 113) + (Course Rating − Par), rounded to the nearest whole number.</p>
       </section>
       <section>
+        <h4>Entering scores</h4>
+        <p>On the Enter Scores tab, every round can be scored either <strong>Hole by Hole</strong> (step through all 18 holes, with each hole's par and stroke index shown, and a running total as you go) or as a <strong>Quick Total</strong> (just type the final gross number). Both feed the exact same scoring math — pick whichever suits the moment. Everything saves automatically as you go, so nothing is lost if the app closes mid-round.</p>
+        <p>Hole-by-Hole entry shows a little emoji next to each score: 🎉 Hole in One · 🌟 Albatross · 🦅 Eagle · 🐦 Birdie · 😬 Double Bogey · 🙈 further over · ⛄ Snowman (any score of 8, whatever the hole's par). Plain par and single bogey stay quiet.</p>
+      </section>
+      <section>
         <h4>Schedule</h4>
         <ul>
           <li>Day 1: O'Connor Jnr — individual stroke play</li>
@@ -639,7 +748,7 @@
       </section>
       <section>
         <h4>Individual stroke play scoring</h4>
-        <p>Gross score is entered per player. Net score = Gross − Course Handicap. Players are ranked by net score (lowest first).</p>
+        <p>Gross score is entered per player (hole by hole or as a quick total). Net score = Gross − Course Handicap. Players are ranked by net score (lowest first).</p>
         <p>Points: 1st 8 · 2nd 7 · 3rd 6 · 4th 5 · 5th 4 · 6th 3 · 7th 2 · 8th 1.</p>
         <p>Tied players split the combined points for their positions equally (e.g. a tie for 1st shares 8+7=15, so 7.5 each).</p>
         <p>These points count towards both the Individual leaderboard and the player's Team leaderboard.</p>

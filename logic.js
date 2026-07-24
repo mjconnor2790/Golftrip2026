@@ -16,8 +16,28 @@
 })(typeof window !== 'undefined' ? window : this, function () {
 
   const COURSES = {
-    oconnor: { key: 'oconnor', name: "O'Connor Jnr", par: 72, rating: 70.7, slope: 129 },
-    faldo:   { key: 'faldo',   name: 'Faldo',         par: 72, rating: 70.9, slope: 134 }
+    oconnor: {
+      key: 'oconnor', name: "O'Connor Jnr", par: 72, rating: 70.7, slope: 129,
+      holes: [
+        { hole: 1, par: 5, index: 11 }, { hole: 2, par: 4, index: 7 }, { hole: 3, par: 3, index: 15 },
+        { hole: 4, par: 4, index: 3 }, { hole: 5, par: 5, index: 17 }, { hole: 6, par: 3, index: 9 },
+        { hole: 7, par: 4, index: 5 }, { hole: 8, par: 4, index: 1 }, { hole: 9, par: 4, index: 13 },
+        { hole: 10, par: 4, index: 6 }, { hole: 11, par: 5, index: 14 }, { hole: 12, par: 4, index: 8 },
+        { hole: 13, par: 3, index: 18 }, { hole: 14, par: 4, index: 2 }, { hole: 15, par: 4, index: 4 },
+        { hole: 16, par: 5, index: 12 }, { hole: 17, par: 3, index: 16 }, { hole: 18, par: 4, index: 10 }
+      ]
+    },
+    faldo: {
+      key: 'faldo', name: 'Faldo', par: 72, rating: 70.9, slope: 134,
+      holes: [
+        { hole: 1, par: 4, index: 7 }, { hole: 2, par: 3, index: 17 }, { hole: 3, par: 4, index: 11 },
+        { hole: 4, par: 5, index: 3 }, { hole: 5, par: 4, index: 9 }, { hole: 6, par: 5, index: 5 },
+        { hole: 7, par: 3, index: 13 }, { hole: 8, par: 4, index: 1 }, { hole: 9, par: 4, index: 15 },
+        { hole: 10, par: 4, index: 8 }, { hole: 11, par: 3, index: 16 }, { hole: 12, par: 4, index: 6 },
+        { hole: 13, par: 5, index: 2 }, { hole: 14, par: 4, index: 10 }, { hole: 15, par: 4, index: 14 },
+        { hole: 16, par: 3, index: 18 }, { hole: 17, par: 4, index: 4 }, { hole: 18, par: 5, index: 12 }
+      ]
+    }
   };
 
   // Fixed tournament schedule. `format` drives which score-entry UI + scoring
@@ -48,6 +68,85 @@
     if (Number.isNaN(hi)) return null;
     const raw = hi * (c.slope / 113) + (c.rating - c.par);
     return Math.round(raw);
+  }
+
+  // Sum only the entered (non-null/non-blank) holes - used to show a running
+  // total while a round is still in progress.
+  function sumHoles(holesArr) {
+    if (!Array.isArray(holesArr)) return 0;
+    return holesArr.reduce((sum, v) => {
+      if (v === null || v === undefined || v === '' || Number.isNaN(Number(v))) return sum;
+      return sum + Number(v);
+    }, 0);
+  }
+
+  function isHolesComplete(holesArr) {
+    return Array.isArray(holesArr) && holesArr.length === 18 &&
+      holesArr.every(v => v !== null && v !== undefined && v !== '' && !Number.isNaN(Number(v)));
+  }
+
+  // A round can be scored either by entering all 18 individual hole scores,
+  // or by typing a single final gross total directly ("Quick Total" mode).
+  // This is the single source of truth for turning either input style into
+  // the one gross number the rest of the scoring logic needs. Hole-by-hole
+  // data wins once complete; otherwise falls back to the manual total.
+  // A single hole score's fun/informal name and emoji, if it earns one.
+  // Priority: absolute scores (hole-in-one, snowman) beat relative-to-par
+  // names, since "an 8 is a snowman" regardless of what the hole's par is.
+  // Plain par and single bogey return null - common enough not to celebrate
+  // or commiserate every time.
+  function getScoreBadge(strokes, par) {
+    if (strokes === null || strokes === undefined || strokes === '' || Number.isNaN(Number(strokes))) return null;
+    const s = Number(strokes);
+    const diff = s - par;
+    if (s === 1) return { emoji: '🎉', label: 'Hole in One!' };
+    if (s === 8) return { emoji: '⛄', label: 'Snowman' };
+    if (diff <= -3) return { emoji: '🌟', label: 'Albatross!' };
+    if (diff === -2) return { emoji: '🦅', label: 'Eagle!' };
+    if (diff === -1) return { emoji: '🐦', label: 'Birdie!' };
+    if (diff === 2) return { emoji: '😬', label: 'Double Bogey' };
+    if (diff >= 3) return { emoji: '🙈', label: '+' + diff };
+    return null;
+  }
+
+  function deriveGross(holesArr, manualTotal) {
+    if (isHolesComplete(holesArr)) return sumHoles(holesArr);
+    if (manualTotal !== undefined && manualTotal !== null && manualTotal !== '' && !Number.isNaN(Number(manualTotal))) {
+      return Number(manualTotal);
+    }
+    return undefined;
+  }
+
+  function resolveEntryGross(entry, legacyFlatValue) {
+    if (entry && typeof entry === 'object') {
+      const g = deriveGross(entry.holes, entry.manualTotal);
+      if (g !== undefined) return g;
+    }
+    if (typeof legacyFlatValue === 'number') return legacyFlatValue; // pre-hole-by-hole saves
+    return undefined;
+  }
+
+  // Single source of truth for "has this round been fully scored yet?" -
+  // used both by computeLeaderboards internally (implicitly, via the same
+  // resolution rules above) and directly by the UI to show Pending/Done.
+  function isRoundComplete(round, roundScores, players) {
+    if (!roundScores) return false;
+    if (round.format === 'individual') {
+      return (players || []).every(p => {
+        const entry = { holes: roundScores.holes && roundScores.holes[p.id], manualTotal: roundScores.manualTotal && roundScores.manualTotal[p.id] };
+        return resolveEntryGross(entry, roundScores[p.id]) !== undefined;
+      });
+    }
+    if (round.format === 'scramble2v2' || round.format === 'altshot2v2') {
+      const pairings = roundScores.pairings || [];
+      if (pairings.length !== 4) return false;
+      return pairings.every(pr => resolveEntryGross(pr, pr.gross) !== undefined);
+    }
+    if (round.format === 'team4') {
+      return resolveEntryGross(roundScores.teamA, roundScores.teamA) !== undefined &&
+        resolveEntryGross(roundScores.teamB, roundScores.teamB) !== undefined;
+    }
+    return false;
   }
 
   // Generic "rank with ties, split points" helper.
@@ -150,7 +249,13 @@
       if (!roundScores) { perRound[round.id] = null; return; }
 
       if (round.format === 'individual') {
-        const results = computeIndividualRound(players, roundScores, round.course);
+        const grossMap = {};
+        players.forEach(p => {
+          const entry = { holes: roundScores.holes && roundScores.holes[p.id], manualTotal: roundScores.manualTotal && roundScores.manualTotal[p.id] };
+          const gross = resolveEntryGross(entry, roundScores[p.id]);
+          if (gross !== undefined) grossMap[p.id] = gross;
+        });
+        const results = computeIndividualRound(players, grossMap, round.course);
         perRound[round.id] = results;
         results.forEach(r => {
           indivStats[r.id].points += r.points;
@@ -160,15 +265,20 @@
           teamStats[r.team].total += r.points;
         });
       } else if (round.format === 'scramble2v2' || round.format === 'altshot2v2') {
-        const pairings = roundScores.pairings || [];
-        const results = computeScrambleRound(pairings);
+        const rawPairings = roundScores.pairings || [];
+        const resolvedPairings = rawPairings.map(pr => Object.assign({}, pr, {
+          gross: resolveEntryGross(pr, pr.gross)
+        }));
+        const results = computeScrambleRound(resolvedPairings);
         perRound[round.id] = results;
         results.forEach(r => {
           teamStats[r.team].team += r.points;
           teamStats[r.team].total += r.points;
         });
       } else if (round.format === 'team4') {
-        const result = computeTeam4Round(roundScores);
+        const teamAGross = resolveEntryGross(roundScores.teamA, roundScores.teamA);
+        const teamBGross = resolveEntryGross(roundScores.teamB, roundScores.teamB);
+        const result = computeTeam4Round({ teamA: teamAGross, teamB: teamBGross });
         perRound[round.id] = result;
         if (result) {
           teamStats.A.team += result.teamA.points;
@@ -208,6 +318,12 @@
     INDIVIDUAL_POINTS_TABLE,
     SCRAMBLE_POINTS_TABLE,
     courseHandicap,
+    sumHoles,
+    isHolesComplete,
+    deriveGross,
+    getScoreBadge,
+    resolveEntryGross,
+    isRoundComplete,
     rankAndSplitPoints,
     computeIndividualRound,
     computeScrambleRound,

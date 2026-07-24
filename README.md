@@ -4,6 +4,23 @@ A mobile-first web app for scoring your 8-player golf trip. No build step —
 just static files. Works standalone on one phone out of the box, and can
 optionally sync live across every player's phone via Firebase.
 
+## Scoring rounds
+
+On the Enter Scores tab, every round can be scored either:
+- **Hole by Hole** — step through all 18 holes (par and stroke index shown
+  for each), with a running total per player/pairing/team as you go, or
+- **Quick Total** — just type the final gross number directly
+
+Both feed the exact same scoring math, and you can mix modes freely within
+the same round (e.g. some players hole-by-hole, others quick total).
+Everything autosaves as you go — there's no separate "save your progress"
+step, so nothing is lost if the app closes mid-round on the course.
+
+Hole-by-Hole entry also shows a little emoji next to each score as you type
+it, plus a quick toast celebration: 🎉 Hole in One · 🌟 Albatross · 🦅 Eagle ·
+🐦 Birdie · 😬 Double Bogey · 🙈 further over par · ⛄ Snowman (any score of 8,
+regardless of the hole's par). Plain par and single bogey stay quiet.
+
 ## Hosting it (GitHub Pages)
 
 1. Push these 10 files to a GitHub repo (root of the repo, or a subfolder —
@@ -90,6 +107,33 @@ Authentication, which is a bigger change I can help with separately.
 - If a phone loses signal, it keeps working from its local cache and
   catches up automatically once it reconnects
 - Export/Import JSON on the Setup tab still works as a manual backup either way
+
+### Still shows "Local only" after setup?
+
+Work through these in order:
+
+1. **Check `firebase-config.js` on GitHub itself** (open the file on github.com,
+   not just locally) — confirm every field, especially `databaseURL`, shows
+   your real values and not leftover placeholder text like `YOUR-PROJECT`.
+   The app specifically checks `databaseURL` for that placeholder text; if
+   it's still there, sync won't turn on even if every other field is correct.
+2. **Hard-refresh, or on iPhone: Settings → Safari → Clear History and
+   Website Data**, then reload. Both the service worker and the browser
+   itself cache files, so an old copy can stick around briefly after a push.
+3. **Open the site on a desktop browser and check the console** (Safari:
+   enable the Develop menu → Show JavaScript Console; Chrome: F12 →
+   Console). A single typo in `firebase-config.js` (missing comma/quote)
+   silently breaks the whole file — the console will show a red error if so.
+   This is much easier to diagnose on desktop than on the phone.
+4. **Double check you created a Realtime Database**, not Firestore — Firebase
+   Console → Build → Realtime Database. They're separate products with
+   similar names, and this app only talks to Realtime Database.
+5. **Make sure you have the latest `sw.js`.** An earlier version of this
+   service worker could interfere with the Firebase SDK scripts loading
+   from their CDN, which silently produces the exact same "Local only"
+   badge. If you set this app up before, re-copy `sw.js` from this package
+   and push it — then clear site data once more so the new service worker
+   takes over.
 
 ## What's in the folder
 

@@ -386,6 +386,50 @@ tr.rank-1 td { background: #fdf6e3; font-weight: 700; }
   color: var(--ink-soft);
 }
 
+/* Hole-by-hole stepper */
+.hole-stepper-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--fairway);
+  color: #fff;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.hole-stepper-header .btn-small {
+  background: rgba(255,255,255,0.15);
+  color: #fff;
+  border-color: rgba(255,255,255,0.3);
+  min-width: 40px;
+}
+.hole-stepper-title { text-align: center; flex: 1; }
+.hole-stepper-title .hs-hole { font-weight: 800; font-size: 1.05rem; }
+.hole-stepper-title .hs-meta { font-size: 0.72rem; color: var(--gold-light); margin-top: 2px; }
+
+.entry-hole-row {
+  display: grid;
+  grid-template-columns: 1fr 50px 28px 62px;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--border);
+  border-radius: 6px;
+}
+.entry-hole-row:last-of-type { border-bottom: none; }
+.entry-hole-row.score-under { background: #e6f4ea; }
+.entry-hole-row.score-par { background: transparent; }
+.entry-hole-row.score-over { background: #fbeae7; }
+
+.score-badge {
+  font-size: 1.1rem;
+  text-align: center;
+  line-height: 1;
+}
+
+.scorecard-summary { margin-top: 10px; }
+
 .pairing-block {
   border: 1px dashed var(--border);
   border-radius: 10px;
