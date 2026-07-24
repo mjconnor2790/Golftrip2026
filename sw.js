@@ -1,18 +1,28 @@
-const CACHE_NAME = 'amendoeira-cup-v1';
-const ASSETS = [
+// Bump this version string on every deploy that changes app files - it
+// forces old caches (and any stale copy stuck on a phone) to be dropped.
+const CACHE_NAME = 'amendoeira-cup-v2';
+
+const APP_SHELL = [
   './',
   './index.html',
   './style.css',
   './logic.js',
+  './sync.js',
+  './firebase-config.js',
   './app.js',
-  './manifest.json',
+  './manifest.json'
+];
+
+const STATIC_ASSETS = [
   './icon-192.png',
   './icon-512.png'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).catch(() => {})
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(APP_SHELL.concat(STATIC_ASSETS)))
+      .catch((err) => console.warn('SW precache failed', err))
   );
   self.skipWaiting();
 });
@@ -26,13 +36,23 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Cache-first for app shell, network fallback; always try network first for
-// same-origin navigation so updates are picked up when online.
+function isAppShellRequest(url) {
+  return APP_SHELL.some((path) => url.endsWith(path.replace('./', '/')) || url.endsWith(path));
+}
+
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const fetchPromise = fetch(event.request)
+
+  const url = event.request.url;
+  const isNavigation = event.request.mode === 'navigate';
+
+  // Network-first for the app shell (HTML/CSS/JS) and page navigations:
+  // always try to get the freshest code when online, and only fall back to
+  // whatever's cached if the network request fails (offline). This is what
+  // prevents a broken/stale first load from getting stuck on a device.
+  if (isNavigation || isAppShellRequest(url)) {
+    event.respondWith(
+      fetch(event.request)
         .then((networkResponse) => {
           if (networkResponse && networkResponse.status === 200) {
             const clone = networkResponse.clone();
@@ -40,8 +60,22 @@ self.addEventListener('fetch', (event) => {
           }
           return networkResponse;
         })
-        .catch(() => cached);
-      return cached || fetchPromise;
+        .catch(() => caches.match(event.request).then((cached) => cached || caches.match('./index.html')))
+    );
+    return;
+  }
+
+  // Cache-first for static assets that rarely change (icons etc).
+  event.respondWith(
+    caches.match(event.request).then((cached) => {
+      if (cached) return cached;
+      return fetch(event.request).then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200) {
+          const clone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        }
+        return networkResponse;
+      });
     })
   );
 });

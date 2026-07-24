@@ -22,6 +22,8 @@
   }
 
   let state = loadState();
+  let playersInitialSyncDone = false;
+  let scoresInitialSyncDone = false;
 
   function loadState() {
     try {
@@ -98,6 +100,76 @@
   }
 
   // ---------------------------------------------------------------------
+  // Cloud sync (Firebase) — optional. If unconfigured or unreachable, every
+  // CloudSync call is a safe no-op and the app runs on localStorage only.
+  // ---------------------------------------------------------------------
+  function updateSyncBadge(connected, reason) {
+    const badge = $('#sync-badge');
+    if (!badge) return;
+    if (reason === 'not-configured' || reason === 'sdk-missing' || reason === 'error') {
+      badge.textContent = 'Local only';
+      badge.className = 'sync-badge local';
+    } else if (connected) {
+      badge.textContent = 'Live sync';
+      badge.className = 'sync-badge live';
+    } else {
+      badge.textContent = 'Offline';
+      badge.className = 'sync-badge offline';
+    }
+  }
+
+  // Fired whenever the /players node changes in the cloud (including our
+  // own writes echoing back). Null on the FIRST snapshot means nothing has
+  // been saved to the cloud yet, so we seed it from whatever we have
+  // locally. Null on any LATER snapshot means someone genuinely reset the
+  // tournament remotely — we must follow that, not fight it by re-seeding
+  // our own stale local cache back into the cloud.
+  function handleRemotePlayers(remotePlayers) {
+    const isFirstSync = !playersInitialSyncDone;
+    playersInitialSyncDone = true;
+
+    if (remotePlayers === null || remotePlayers === undefined) {
+      if (isFirstSync && window.CloudSync && window.CloudSync.isAvailable() && state.players.some(p => p.name && p.name.trim())) {
+        window.CloudSync.savePlayers(state.players);
+        return;
+      }
+      if (isFirstSync) return; // nothing in the cloud yet and nothing local to seed with
+      state.players = defaultPlayers();
+    } else {
+      state.players = remotePlayers;
+    }
+    saveState();
+    renderPlayerForm();
+    renderCHTable();
+    renderSchedule();
+    populateRoundSelect();
+    renderRoundEntry($('#round-select').value);
+    renderIndividualLeaderboard();
+    renderTeamLeaderboard();
+  }
+
+  function handleRemoteScores(remoteScores) {
+    const isFirstSync = !scoresInitialSyncDone;
+    scoresInitialSyncDone = true;
+
+    if (remoteScores === null || remoteScores === undefined) {
+      if (isFirstSync && window.CloudSync && window.CloudSync.isAvailable() && Object.keys(state.scores).length > 0) {
+        Object.keys(state.scores).forEach(rid => window.CloudSync.saveRoundScore(rid, state.scores[rid]));
+        return;
+      }
+      if (isFirstSync) return; // nothing in the cloud yet and nothing local to seed with
+      state.scores = {};
+    } else {
+      state.scores = remoteScores;
+    }
+    saveState();
+    renderSchedule();
+    renderRoundEntry($('#round-select').value);
+    renderIndividualLeaderboard();
+    renderTeamLeaderboard();
+  }
+
+  // ---------------------------------------------------------------------
   // Tabs
   // ---------------------------------------------------------------------
   function initTabs() {
@@ -170,6 +242,7 @@
     });
     state.players = updated;
     saveState();
+    if (window.CloudSync) window.CloudSync.savePlayers(updated);
     renderCHTable();
     renderSchedule();
     renderIndividualLeaderboard();
@@ -328,6 +401,7 @@
     });
     state.scores[round.id] = scores;
     saveState();
+    if (window.CloudSync) window.CloudSync.saveRoundScore(round.id, scores);
     toast('Scores saved for ' + round.session);
     renderSchedule();
     renderIndividualLeaderboard();
@@ -418,6 +492,7 @@
     });
     state.scores[round.id] = { pairings: pairings };
     saveState();
+    if (window.CloudSync) window.CloudSync.saveRoundScore(round.id, { pairings: pairings });
     toast('Scores saved for ' + round.session);
     renderSchedule();
     renderTeamLeaderboard();
@@ -443,6 +518,7 @@
           teamB: (bInput.value !== '' && !Number.isNaN(Number(bInput.value))) ? Number(bInput.value) : ''
         };
         saveState();
+        if (window.CloudSync) window.CloudSync.saveRoundScore(round.id, state.scores[round.id]);
         toast('Scores saved for ' + round.session);
         renderSchedule();
         renderTeamLeaderboard();
@@ -455,6 +531,7 @@
   function clearRound(round) {
     delete state.scores[round.id];
     saveState();
+    if (window.CloudSync) window.CloudSync.clearRoundScore(round.id);
     toast(round.session + ' cleared');
     renderRoundEntry(round.id);
     renderSchedule();
@@ -579,7 +656,7 @@
       </section>
       <section>
         <h4>Data</h4>
-        <p>All data is stored locally on this device. Use Export/Import on the Setup tab to back up or transfer the tournament data to another device.</p>
+        <p>Data is always cached on this device. If Firebase sync is configured (see the badge in the header), scores also sync live across every phone using this link. Use Export/Import on the Setup tab to back up or transfer the tournament data manually.</p>
       </section>
     `;
   }
@@ -608,6 +685,7 @@
         if (!parsed || !Array.isArray(parsed.players)) throw new Error('Invalid file format');
         state = { players: parsed.players, scores: parsed.scores || {} };
         saveState();
+        if (window.CloudSync) window.CloudSync.importAll(state.players, state.scores);
         refreshAll();
         toast('Import successful');
       } catch (e) {
@@ -622,6 +700,7 @@
     if (!confirm('Reset all scores? Players and teams will be kept.')) return;
     state.scores = {};
     saveState();
+    if (window.CloudSync) window.CloudSync.resetScores();
     refreshAll();
     toast('All scores reset');
   }
@@ -630,6 +709,7 @@
     if (!confirm('Reset EVERYTHING — players, teams and scores? This cannot be undone.')) return;
     state = defaultState();
     saveState();
+    if (window.CloudSync) window.CloudSync.resetAll();
     refreshAll();
     toast('Tournament fully reset');
   }
@@ -666,6 +746,16 @@
     });
     $('#btn-reset-scores').addEventListener('click', resetScores);
     $('#btn-reset-all').addEventListener('click', resetEverything);
+
+    if (window.CloudSync) {
+      const started = window.CloudSync.init(updateSyncBadge);
+      if (started) {
+        window.CloudSync.onPlayersChange(handleRemotePlayers);
+        window.CloudSync.onScoresChange(handleRemoteScores);
+      } else {
+        updateSyncBadge(false, 'not-configured');
+      }
+    }
 
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {

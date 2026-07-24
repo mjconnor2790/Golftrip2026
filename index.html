@@ -25,6 +25,7 @@
       <h1>Amendoeira Cup</h1>
       <p>O'Connor Jnr &amp; Faldo · 8 Players · 5 Days</p>
     </div>
+    <span class="sync-badge" id="sync-badge">Local only</span>
   </div>
 </header>
 
@@ -61,6 +62,7 @@
     </div>
 
     <h2>Data</h2>
+    <p class="hint">The badge in the top-right shows sync status. <strong>Live sync</strong> means every phone with this link sees the same data in real time. <strong>Local only</strong> means Firebase isn't set up yet (or is unreachable) — the app still works fully, just on this device only. See README.md for setup steps.</p>
     <div class="row-actions wrap">
       <button class="btn" id="btn-export">Export JSON</button>
       <button class="btn" id="btn-import-trigger">Import JSON</button>
@@ -126,6 +128,10 @@
 
 <div id="toast" class="toast"></div>
 
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="sync.js"></script>
 <script src="logic.js"></script>
 <script src="app.js"></script>
 </body>
