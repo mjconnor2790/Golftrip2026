@@ -82,6 +82,27 @@
     });
   }
 
+  // Granular leaf-level write - use this for anything that can happen
+  // concurrently from more than one phone (individual hole scores, manual
+  // totals, pairing composition). Writing only the specific leaf that
+  // changed means two people editing different players/holes/pairings at
+  // the same moment never clobber each other - unlike overwriting the
+  // whole round's data on every keystroke.
+  // path is relative, e.g. 'scores/d1/holes/p1/4' or 'scores/d2pm/pairings/A1/manualTotal'.
+  function setPath(path, value) {
+    if (!db) return Promise.resolve(false);
+    return db.ref(DB_PATH + '/' + path).set(value).then(() => true).catch((e) => {
+      console.error('setPath failed for ' + path, e); return false;
+    });
+  }
+
+  function removePath(path) {
+    if (!db) return Promise.resolve(false);
+    return db.ref(DB_PATH + '/' + path).remove().then(() => true).catch((e) => {
+      console.error('removePath failed for ' + path, e); return false;
+    });
+  }
+
   function saveRoundScore(roundId, data) {
     if (!db) return Promise.resolve(false);
     return db.ref(DB_PATH + '/scores/' + roundId).set(data).then(() => true).catch((e) => {
@@ -121,6 +142,7 @@
     init, isAvailable, isConnected,
     onPlayersChange, onScoresChange,
     savePlayers, saveRoundScore, clearRoundScore,
+    setPath, removePath,
     resetScores, resetAll, importAll
   };
 });

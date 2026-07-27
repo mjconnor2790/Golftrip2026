@@ -118,12 +118,26 @@
     }
   }
 
+  function isTypingIn(containerId) {
+    const activeEl = document.activeElement;
+    if (!activeEl) return false;
+    const container = $('#' + containerId);
+    return !!(container && container.contains(activeEl));
+  }
+
   // Fired whenever the /players node changes in the cloud (including our
   // own writes echoing back). Null on the FIRST snapshot means nothing has
   // been saved to the cloud yet, so we seed it from whatever we have
   // locally. Null on any LATER snapshot means someone genuinely reset the
   // tournament remotely — we must follow that, not fight it by re-seeding
   // our own stale local cache back into the cloud.
+  //
+  // Skips rebuilding the Setup form specifically while the user has focus
+  // inside it - every one of our own edits echoes back from the cloud
+  // almost instantly, and rebuilding the form on that echo would destroy
+  // whatever input is focused mid-keystroke (losing focus, and
+  // potentially misdirecting the next character typed). The rest of the
+  // time (not actively typing there), it refreshes normally.
   function handleRemotePlayers(remotePlayers) {
     const isFirstSync = !playersInitialSyncDone;
     playersInitialSyncDone = true;
@@ -139,15 +153,18 @@
       state.players = remotePlayers;
     }
     saveState();
-    renderPlayerForm();
+    if (!isTypingIn('player-form-rows')) renderPlayerForm();
     renderCHTable();
     renderSchedule();
     populateRoundSelect();
-    renderRoundEntry($('#round-select').value);
+    if (!isTypingIn('round-entry')) renderRoundEntry($('#round-select').value);
     renderIndividualLeaderboard();
     renderTeamLeaderboard();
   }
 
+  // See handleRemotePlayers above for why this skips rebuilding the
+  // currently-visible hole score inputs while the user is actively typing
+  // in them - same self-echo-mid-keystroke hazard, same fix.
   function handleRemoteScores(remoteScores) {
     const isFirstSync = !scoresInitialSyncDone;
     scoresInitialSyncDone = true;
@@ -164,7 +181,7 @@
     }
     saveState();
     renderSchedule();
-    renderRoundEntry($('#round-select').value);
+    if (!isTypingIn('round-entry')) renderRoundEntry($('#round-select').value);
     renderIndividualLeaderboard();
     renderTeamLeaderboard();
   }
@@ -181,6 +198,7 @@
   function switchTab(tab) {
     $all('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
     $all('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tab));
+    if (tab === 'setup') renderCHTable();
     if (tab === 'indiv') renderIndividualLeaderboard();
     if (tab === 'team') renderTeamLeaderboard();
     if (tab === 'schedule') renderSchedule();
@@ -337,11 +355,23 @@
 
   // ---------------------------------------------------------------------
   // Shared hole-by-hole / quick-total entry component, used by all three
-  // round formats. `entities` is [{ id, makeLabel(), holes: <array, mutated
-  // in place>, getManualTotal, setManualTotal }]. Every change autosaves
-  // immediately (localStorage + cloud) - there's no separate "unsaved
-  // draft" state, since a round can take hours to play and the app must
-  // never lose progress if it's closed mid-round.
+  // round formats.
+  //
+  // `entities` is [{ id, makeLabel(), getHoles(), getManualTotal(),
+  // setManualTotal(v), cloudHolesPath, cloudManualTotalPath }].
+  //
+  // Two correctness requirements drive this design:
+  //  1. getHoles()/getManualTotal() are called FRESH on every read and
+  //     write (never a cached array/object reference) - because when a
+  //     cloud sync update arrives mid-entry, state.scores gets reassigned
+  //     wholesale, which would silently orphan any array reference the UI
+  //     had captured earlier, discarding every keystroke typed after that
+  //     point. Re-resolving from live state every time makes this immune
+  //     to that regardless of how or when remote updates land.
+  //  2. Every save writes only the ONE leaf path that changed (a single
+  //     hole for one player, or one manual total), not the whole round
+  //     object - so two phones editing different players/holes/pairings
+  //     at the same moment can never clobber each other.
   // ---------------------------------------------------------------------
   let currentHoleByRound = {};
   let entryModeByRound = {};
@@ -359,7 +389,11 @@
     return 'score-over';
   }
 
-  function renderScoreEntryUI(round, entities, container, onPersist) {
+  function pushPath(path, value) {
+    if (window.CloudSync) window.CloudSync.setPath(path, value);
+  }
+
+  function renderScoreEntryUI(round, entities, container) {
     const mode = getEntryMode(round.id);
     const course = G.COURSES[round.course];
 
@@ -382,9 +416,10 @@
           value: ent.getManualTotal() !== undefined ? ent.getManualTotal() : ''
         });
         input.addEventListener('input', () => {
-          ent.setManualTotal(input.value === '' ? '' : input.value);
+          const v = input.value === '' ? '' : input.value;
+          ent.setManualTotal(v);
           saveState();
-          onPersist();
+          pushPath(ent.cloudManualTotalPath, v === '' ? null : Number(v));
         });
         container.appendChild(el('div', { class: 'entry-card' }, [
           el('div', { class: 'field-label' }, [ent.makeLabel()]),
@@ -413,12 +448,13 @@
     container.appendChild(header);
 
     entities.forEach(ent => {
-      const val = ent.holes[holeIdx];
+      const holesNow = ent.getHoles();
+      const val = holesNow[holeIdx];
       const input = el('input', {
         type: 'number', inputmode: 'numeric', placeholder: '—',
         value: (val === null || val === undefined) ? '' : val
       });
-      const totalDisplay = el('div', { class: 'entry-readonly' }, [String(G.sumHoles(ent.holes))]);
+      const totalDisplay = el('div', { class: 'entry-readonly' }, [String(G.sumHoles(holesNow))]);
       const badgeDisplay = el('div', { class: 'score-badge' }, []);
       const row = el('div', { class: 'entry-hole-row' }, [
         el('div', { class: 'entry-player-name' }, [ent.makeLabel()]),
@@ -441,12 +477,17 @@
       applyBadge();
       input.addEventListener('input', () => {
         const v = input.value;
-        ent.holes[holeIdx] = (v === '' || Number.isNaN(Number(v))) ? null : Number(v);
+        const parsed = (v === '' || Number.isNaN(Number(v))) ? null : Number(v);
+        // Re-resolve the live holes array fresh right now, rather than
+        // trusting the `holesNow` captured when this row was built - a
+        // remote sync update could have replaced state.scores since then.
+        const liveHoles = ent.getHoles();
+        liveHoles[holeIdx] = parsed;
         saveState();
-        totalDisplay.textContent = String(G.sumHoles(ent.holes));
+        totalDisplay.textContent = String(G.sumHoles(liveHoles));
         applyClass();
         applyBadge();
-        onPersist();
+        pushPath(ent.cloudHolesPath + '/' + holeIdx, parsed);
       });
       input.addEventListener('change', () => {
         // Fires once the value is committed (blur/enter), not on every
@@ -472,8 +513,9 @@
     // Compact "thru / total so far" summary for every entity
     const summary = el('div', { class: 'scorecard-summary' });
     entities.forEach(ent => {
-      const thru = ent.holes.filter(v => v !== null && v !== undefined && v !== '').length;
-      const total = G.sumHoles(ent.holes);
+      const holes = ent.getHoles();
+      const thru = G.countFilledHoles(holes);
+      const total = G.sumHoles(holes);
       summary.appendChild(el('div', { class: 'breakdown-row' }, [
         el('div', { class: 'br-label' }, [ent.makeLabel()]),
         el('div', { class: 'br-scores' }, [thru === 0 ? 'Not started' : ('Thru ' + thru + ' · ' + total + (thru === 18 ? ' (' + (total - course.par >= 0 ? '+' : '') + (total - course.par) + ')' : ''))])
@@ -492,7 +534,7 @@
     if (!rs.holes) rs.holes = {};
     if (!rs.manualTotal) rs.manualTotal = {};
     state.players.forEach(p => {
-      if (!Array.isArray(rs.holes[p.id]) || rs.holes[p.id].length !== 18) rs.holes[p.id] = new Array(18).fill(null);
+      if (!rs.holes[p.id] || typeof rs.holes[p.id] !== 'object') rs.holes[p.id] = {};
       if (rs.manualTotal[p.id] === undefined) {
         // back-compat: a round saved before hole-by-hole entry existed
         // stored a flat { playerId: number } total directly.
@@ -504,35 +546,44 @@
   }
 
   function renderIndividualEntry(round, container) {
-    const rs = ensureIndividualShape(round.id);
+    ensureIndividualShape(round.id);
     const entities = state.players.map(p => ({
       id: p.id,
       makeLabel: () => el('span', {}, [p.name, ' ', el('span', { class: 'team-chip ' + p.team }, [p.team])]),
-      holes: rs.holes[p.id],
-      getManualTotal: () => rs.manualTotal[p.id],
-      setManualTotal: (v) => { rs.manualTotal[p.id] = v; }
+      getHoles: () => ensureIndividualShape(round.id).holes[p.id],
+      getManualTotal: () => ensureIndividualShape(round.id).manualTotal[p.id],
+      setManualTotal: (v) => { ensureIndividualShape(round.id).manualTotal[p.id] = v; },
+      cloudHolesPath: 'scores/' + round.id + '/holes/' + p.id,
+      cloudManualTotalPath: 'scores/' + round.id + '/manualTotal/' + p.id
     }));
-    renderScoreEntryUI(round, entities, container, () => {
-      if (window.CloudSync) window.CloudSync.saveRoundScore(round.id, state.scores[round.id]);
-    });
+    renderScoreEntryUI(round, entities, container);
   }
 
   function ensureScrambleShape(roundId) {
-    if (!state.scores[roundId] || typeof state.scores[roundId] !== 'object' || !Array.isArray(state.scores[roundId].pairings)) {
-      state.scores[roundId] = { pairings: [] };
+    const existing = state.scores[roundId];
+    const hasValidPairings = existing && typeof existing === 'object' &&
+      existing.pairings && typeof existing.pairings === 'object' && !Array.isArray(existing.pairings);
+    if (!hasValidPairings) {
+      // Fresh round, or back-compat: earlier versions stored pairings as
+      // an array. Convert to an object keyed by pairing id (A1/A2/B1/B2)
+      // so each pairing has a stable path for granular cloud writes.
+      const oldArray = (existing && Array.isArray(existing.pairings)) ? existing.pairings : [];
+      const byId = {};
+      oldArray.forEach(pr => { byId[pr.id] = pr; });
+      state.scores[roundId] = { pairings: byId };
     }
     const rs = state.scores[roundId];
     ['A', 'B'].forEach(team => {
       const tp = teamPlayers(team);
       [['1', 0], ['2', 1]].forEach(([slot, pos]) => {
         const id = team + slot;
-        let pr = rs.pairings.find(x => x.id === id);
+        let pr = rs.pairings[id];
         if (!pr) {
           const defaultIds = pos === 0 ? [tp[0].id, tp[1].id] : [tp[2].id, tp[3].id];
-          pr = { id: id, team: team, playerIds: defaultIds, holes: new Array(18).fill(null), manualTotal: '' };
-          rs.pairings.push(pr);
+          pr = { id: id, team: team, playerIds: defaultIds, holes: {}, manualTotal: '' };
+          rs.pairings[id] = pr;
         }
-        if (!Array.isArray(pr.holes) || pr.holes.length !== 18) pr.holes = new Array(18).fill(null);
+        if (!pr.holes || typeof pr.holes !== 'object') pr.holes = {};
         if (pr.manualTotal === undefined) pr.manualTotal = (typeof pr.gross === 'number') ? pr.gross : '';
         if (typeof pr.gross === 'number') delete pr.gross;
         if (!Array.isArray(pr.playerIds) || pr.playerIds.length !== 2) {
@@ -546,14 +597,9 @@
   function renderScrambleEntry(round, container) {
     const rs = ensureScrambleShape(round.id);
 
-    function pushRoundToCloud() {
-      if (window.CloudSync) window.CloudSync.saveRoundScore(round.id, state.scores[round.id]);
-    }
-
     ['A', 'B'].forEach(team => {
       const tp = teamPlayers(team);
-      const pr1 = rs.pairings.find(p => p.id === team + '1');
-      const pr2 = rs.pairings.find(p => p.id === team + '2');
+      const pr1id = team + '1', pr2id = team + '2';
 
       const block = el('div', { class: 'pairing-block' });
       block.appendChild(el('div', { class: 'pairing-title' }, [el('span', { class: 'team-chip ' + team }, ['TEAM ' + team])]));
@@ -564,8 +610,8 @@
         sel1.appendChild(el('option', { value: pl.id }, [pl.name || pl.id]));
         sel2.appendChild(el('option', { value: pl.id }, [pl.name || pl.id]));
       });
-      sel1.value = pr1.playerIds[0];
-      sel2.value = pr1.playerIds[1];
+      sel1.value = ensureScrambleShape(round.id).pairings[pr1id].playerIds[0];
+      sel2.value = ensureScrambleShape(round.id).pairings[pr1id].playerIds[1];
 
       const pairing2Label = el('div', { class: 'entry-readonly', style: 'text-align:left;' });
       function updatePairing2Label() {
@@ -577,10 +623,14 @@
 
       function persistComposition() {
         const remaining = updatePairing2Label();
-        pr1.playerIds = [sel1.value, sel2.value];
-        pr2.playerIds = remaining.map(pl => pl.id);
+        const liveRs = ensureScrambleShape(round.id);
+        const ids1 = [sel1.value, sel2.value];
+        const ids2 = remaining.map(pl => pl.id);
+        liveRs.pairings[pr1id].playerIds = ids1;
+        liveRs.pairings[pr2id].playerIds = ids2;
         saveState();
-        pushRoundToCloud();
+        pushPath('scores/' + round.id + '/pairings/' + pr1id + '/playerIds', ids1);
+        pushPath('scores/' + round.id + '/pairings/' + pr2id + '/playerIds', ids2);
       }
 
       function enforceDistinct() {
@@ -600,13 +650,24 @@
       container.appendChild(block);
     });
 
+    function makePairingEntity(id, label) {
+      return {
+        id: id,
+        makeLabel: () => document.createTextNode(label),
+        getHoles: () => ensureScrambleShape(round.id).pairings[id].holes,
+        getManualTotal: () => ensureScrambleShape(round.id).pairings[id].manualTotal,
+        setManualTotal: (v) => { ensureScrambleShape(round.id).pairings[id].manualTotal = v; },
+        cloudHolesPath: 'scores/' + round.id + '/pairings/' + id + '/holes',
+        cloudManualTotalPath: 'scores/' + round.id + '/pairings/' + id + '/manualTotal'
+      };
+    }
     const entities = [
-      { id: 'A1', makeLabel: () => document.createTextNode('Team A · Pairing 1'), holes: rs.pairings.find(p => p.id === 'A1').holes, getManualTotal: () => rs.pairings.find(p => p.id === 'A1').manualTotal, setManualTotal: (v) => { rs.pairings.find(p => p.id === 'A1').manualTotal = v; } },
-      { id: 'A2', makeLabel: () => document.createTextNode('Team A · Pairing 2'), holes: rs.pairings.find(p => p.id === 'A2').holes, getManualTotal: () => rs.pairings.find(p => p.id === 'A2').manualTotal, setManualTotal: (v) => { rs.pairings.find(p => p.id === 'A2').manualTotal = v; } },
-      { id: 'B1', makeLabel: () => document.createTextNode('Team B · Pairing 1'), holes: rs.pairings.find(p => p.id === 'B1').holes, getManualTotal: () => rs.pairings.find(p => p.id === 'B1').manualTotal, setManualTotal: (v) => { rs.pairings.find(p => p.id === 'B1').manualTotal = v; } },
-      { id: 'B2', makeLabel: () => document.createTextNode('Team B · Pairing 2'), holes: rs.pairings.find(p => p.id === 'B2').holes, getManualTotal: () => rs.pairings.find(p => p.id === 'B2').manualTotal, setManualTotal: (v) => { rs.pairings.find(p => p.id === 'B2').manualTotal = v; } }
+      makePairingEntity('A1', 'Team A · Pairing 1'),
+      makePairingEntity('A2', 'Team A · Pairing 2'),
+      makePairingEntity('B1', 'Team B · Pairing 1'),
+      makePairingEntity('B2', 'Team B · Pairing 2')
     ];
-    renderScoreEntryUI(round, entities, container, pushRoundToCloud);
+    renderScoreEntryUI(round, entities, container);
   }
 
   function ensureTeam4Shape(roundId) {
@@ -614,22 +675,28 @@
     const rs = state.scores[roundId];
     ['teamA', 'teamB'].forEach(key => {
       const legacy = (typeof rs[key] === 'number') ? rs[key] : '';
-      if (!rs[key] || typeof rs[key] !== 'object') rs[key] = { holes: new Array(18).fill(null), manualTotal: legacy };
-      if (!Array.isArray(rs[key].holes) || rs[key].holes.length !== 18) rs[key].holes = new Array(18).fill(null);
+      if (!rs[key] || typeof rs[key] !== 'object') rs[key] = { holes: {}, manualTotal: legacy };
+      if (!rs[key].holes || typeof rs[key].holes !== 'object') rs[key].holes = {};
       if (rs[key].manualTotal === undefined) rs[key].manualTotal = legacy;
     });
     return rs;
   }
 
   function renderTeam4Entry(round, container) {
-    const rs = ensureTeam4Shape(round.id);
-    const entities = [
-      { id: 'teamA', makeLabel: () => el('span', { class: 'team-chip A' }, ['TEAM A']), holes: rs.teamA.holes, getManualTotal: () => rs.teamA.manualTotal, setManualTotal: (v) => { rs.teamA.manualTotal = v; } },
-      { id: 'teamB', makeLabel: () => el('span', { class: 'team-chip B' }, ['TEAM B']), holes: rs.teamB.holes, getManualTotal: () => rs.teamB.manualTotal, setManualTotal: (v) => { rs.teamB.manualTotal = v; } }
-    ];
-    renderScoreEntryUI(round, entities, container, () => {
-      if (window.CloudSync) window.CloudSync.saveRoundScore(round.id, state.scores[round.id]);
-    });
+    ensureTeam4Shape(round.id);
+    function makeTeamEntity(key, chipTeam) {
+      return {
+        id: key,
+        makeLabel: () => el('span', { class: 'team-chip ' + chipTeam }, ['TEAM ' + chipTeam]),
+        getHoles: () => ensureTeam4Shape(round.id)[key].holes,
+        getManualTotal: () => ensureTeam4Shape(round.id)[key].manualTotal,
+        setManualTotal: (v) => { ensureTeam4Shape(round.id)[key].manualTotal = v; },
+        cloudHolesPath: 'scores/' + round.id + '/' + key + '/holes',
+        cloudManualTotalPath: 'scores/' + round.id + '/' + key + '/manualTotal'
+      };
+    }
+    const entities = [makeTeamEntity('teamA', 'A'), makeTeamEntity('teamB', 'B')];
+    renderScoreEntryUI(round, entities, container);
   }
 
   function clearRound(round) {

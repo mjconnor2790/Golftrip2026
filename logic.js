@@ -70,19 +70,48 @@
     return Math.round(raw);
   }
 
+  // Holes are stored as a sparse OBJECT keyed by hole index string ("0".."17"),
+  // not a JS array - a plain object is safe to update one hole at a time via
+  // Firebase's granular per-path writes. An array is NOT safe for this:
+  // writing only ref('holes/5').set(4) with the other 17 slots never
+  // individually written leaves Firebase (and any RTDB-backed store) with
+  // just {5: 4} on readback, not a real 18-slot array - which then fails an
+  // Array.isArray check and gets wiped. Every function here accepts either
+  // shape (object is normal going forward; array is accepted for older
+  // locally-saved data) and normalizes internally.
+  function normalizeHoles(holes) {
+    const out = new Array(18).fill(null);
+    if (!holes) return out;
+    if (Array.isArray(holes)) {
+      for (let i = 0; i < 18; i++) if (holes[i] !== undefined) out[i] = holes[i];
+      return out;
+    }
+    if (typeof holes === 'object') {
+      Object.keys(holes).forEach(k => {
+        const i = Number(k);
+        if (Number.isInteger(i) && i >= 0 && i < 18) out[i] = holes[k];
+      });
+      return out;
+    }
+    return out;
+  }
+
   // Sum only the entered (non-null/non-blank) holes - used to show a running
   // total while a round is still in progress.
-  function sumHoles(holesArr) {
-    if (!Array.isArray(holesArr)) return 0;
-    return holesArr.reduce((sum, v) => {
+  function sumHoles(holes) {
+    return normalizeHoles(holes).reduce((sum, v) => {
       if (v === null || v === undefined || v === '' || Number.isNaN(Number(v))) return sum;
       return sum + Number(v);
     }, 0);
   }
 
-  function isHolesComplete(holesArr) {
-    return Array.isArray(holesArr) && holesArr.length === 18 &&
-      holesArr.every(v => v !== null && v !== undefined && v !== '' && !Number.isNaN(Number(v)));
+  function countFilledHoles(holes) {
+    return normalizeHoles(holes).filter(v => v !== null && v !== undefined && v !== '').length;
+  }
+
+  function isHolesComplete(holes) {
+    const arr = normalizeHoles(holes);
+    return arr.every(v => v !== null && v !== undefined && v !== '' && !Number.isNaN(Number(v)));
   }
 
   // A round can be scored either by entering all 18 individual hole scores,
@@ -109,12 +138,21 @@
     return null;
   }
 
-  function deriveGross(holesArr, manualTotal) {
-    if (isHolesComplete(holesArr)) return sumHoles(holesArr);
+  function deriveGross(holes, manualTotal) {
+    if (isHolesComplete(holes)) return sumHoles(holes);
     if (manualTotal !== undefined && manualTotal !== null && manualTotal !== '' && !Number.isNaN(Number(manualTotal))) {
       return Number(manualTotal);
     }
     return undefined;
+  }
+
+  // Pairings are stored as an object keyed by pairing id (A1/A2/B1/B2) so
+  // each has a stable path for granular cloud writes; older saves used a
+  // plain array. Normalize either shape to an array wherever consumed.
+  function pairingsToArray(pairings) {
+    if (!pairings) return [];
+    if (Array.isArray(pairings)) return pairings;
+    return Object.keys(pairings).map(k => pairings[k]);
   }
 
   function resolveEntryGross(entry, legacyFlatValue) {
@@ -138,7 +176,7 @@
       });
     }
     if (round.format === 'scramble2v2' || round.format === 'altshot2v2') {
-      const pairings = roundScores.pairings || [];
+      const pairings = pairingsToArray(roundScores.pairings);
       if (pairings.length !== 4) return false;
       return pairings.every(pr => resolveEntryGross(pr, pr.gross) !== undefined);
     }
@@ -265,7 +303,7 @@
           teamStats[r.team].total += r.points;
         });
       } else if (round.format === 'scramble2v2' || round.format === 'altshot2v2') {
-        const rawPairings = roundScores.pairings || [];
+        const rawPairings = pairingsToArray(roundScores.pairings);
         const resolvedPairings = rawPairings.map(pr => Object.assign({}, pr, {
           gross: resolveEntryGross(pr, pr.gross)
         }));
@@ -318,10 +356,13 @@
     INDIVIDUAL_POINTS_TABLE,
     SCRAMBLE_POINTS_TABLE,
     courseHandicap,
+    normalizeHoles,
     sumHoles,
+    countFilledHoles,
     isHolesComplete,
     deriveGross,
     getScoreBadge,
+    pairingsToArray,
     resolveEntryGross,
     isRoundComplete,
     rankAndSplitPoints,
